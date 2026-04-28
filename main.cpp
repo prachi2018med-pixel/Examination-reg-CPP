@@ -30,12 +30,17 @@ std::string generate_unique_id() {
 void init_db() {
     sqlite3* db;
     sqlite3_open("students.db", &db);
-    // Explicitly using IF NOT EXISTS and ensuring the structure is correct
+    
+    // Create table if it doesn't exist
     std::string sql = "CREATE TABLE IF NOT EXISTS students ("
                       "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                       "unique_id TEXT,"
                       "name TEXT, roll_no TEXT, branch TEXT, subjects TEXT);";
     sqlite3_exec(db, sql.c_str(), 0, 0, 0);
+
+    // FIX: Forcefully add unique_id column in case it's missing from old database
+    sqlite3_exec(db, "ALTER TABLE students ADD COLUMN unique_id TEXT;", 0, 0, 0);
+    
     sqlite3_close(db);
 }
 
@@ -58,19 +63,13 @@ int main() {
         sqlite3* db;
         sqlite3_open("students.db", &db);
         
-        // Use a safer prepared statement format for the insert
         std::string sql = "INSERT INTO students (unique_id, name, roll_no, branch, subjects) VALUES ('" 
                           + uid + "', '" + name + "', '" + roll + "', '" + branch + "', 'Mathematics, Physics, Computing');";
         
-        char* errMsg = 0;
-        int rc = sqlite3_exec(db, sql.c_str(), 0, 0, &errMsg);
-        
+        int rc = sqlite3_exec(db, sql.c_str(), 0, 0, 0);
         int last_id = 0;
         if (rc == SQLITE_OK) {
             last_id = (int)sqlite3_last_insert_rowid(db);
-        } else {
-            std::cerr << "SQL Error: " << errMsg << std::endl;
-            sqlite3_free(errMsg);
         }
         
         sqlite3_close(db);
@@ -83,39 +82,37 @@ int main() {
 
     CROW_ROUTE(app, "/hallticket/<int>").methods(crow::HTTPMethod::Get)
     ([](int id){
-        if (id == 0) return crow::response(400, "Invalid Registration. Please try again.");
+        if (id <= 0) return crow::response(400, "Invalid Registration. Please return to home and try again.");
 
         sqlite3* db;
         sqlite3_stmt* stmt;
         sqlite3_open("students.db", &db);
         std::string sql = "SELECT unique_id, name, roll_no, branch, subjects FROM students WHERE id = " + std::to_string(id);
         
-        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, 0) != SQLITE_OK) {
-            sqlite3_close(db);
-            return crow::response(500, "Database Error");
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, 0) == SQLITE_OK) {
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                crow::mustache::context ctx;
+                const char* uid_ptr = (const char*)sqlite3_column_text(stmt, 0);
+                std::string s_uid = uid_ptr ? uid_ptr : "N/A";
+                std::string s_name = (const char*)sqlite3_column_text(stmt, 1);
+                std::string s_roll = (const char*)sqlite3_column_text(stmt, 2);
+
+                ctx["uid"] = s_uid;
+                ctx["name"] = s_name;
+                ctx["roll"] = s_roll;
+                ctx["branch"] = (const char*)sqlite3_column_text(stmt, 3);
+                ctx["subjects"] = (const char*)sqlite3_column_text(stmt, 4);
+                
+                std::string raw_data = "UID: " + s_uid + " | Student: " + s_name + " | Roll: " + s_roll;
+                ctx["qr_url"] = "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=" + url_encode(raw_data);
+
+                sqlite3_finalize(stmt);
+                sqlite3_close(db);
+                return crow::response(crow::mustache::load("hallticket.html").render(ctx));
+            }
         }
         
-        if (sqlite3_step(stmt) == SQLITE_ROW) {
-            crow::mustache::context ctx;
-            std::string s_uid = (const char*)sqlite3_column_text(stmt, 0);
-            std::string s_name = (const char*)sqlite3_column_text(stmt, 1);
-            std::string s_roll = (const char*)sqlite3_column_text(stmt, 2);
-
-            ctx["uid"] = s_uid;
-            ctx["name"] = s_name;
-            ctx["roll"] = s_roll;
-            ctx["branch"] = (const char*)sqlite3_column_text(stmt, 3);
-            ctx["subjects"] = (const char*)sqlite3_column_text(stmt, 4);
-            
-            std::string raw_data = "UID: " + s_uid + " | Student: " + s_name + " | Roll: " + s_roll;
-            ctx["qr_url"] = "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=" + url_encode(raw_data);
-
-            sqlite3_finalize(stmt);
-            sqlite3_close(db);
-            return crow::response(crow::mustache::load("hallticket.html").render(ctx));
-        }
-        
-        sqlite3_finalize(stmt);
+        if(stmt) sqlite3_finalize(stmt);
         sqlite3_close(db);
         return crow::response(404, "Ticket Not Found");
     });
