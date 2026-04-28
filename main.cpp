@@ -17,12 +17,12 @@ int main() {
     crow::SimpleApp app;
     init_db();
 
-    // 1. Home Page
-    CROW_ROUTE(app, "/")([](){
+    // 1. Home Page (Force GET method)
+    CROW_ROUTE(app, "/").methods(crow::HTTPMethod::Get)([](){
         return crow::response(crow::mustache::load("form.html").render());
     });
 
-    // 2. Handle Registration (POST)
+    // 2. Handle Registration (Force POST method)
     CROW_ROUTE(app, "/register").methods(crow::HTTPMethod::Post)
     ([](const crow::request& req){
         auto x = crow::query_string("?" + req.body); 
@@ -41,13 +41,14 @@ int main() {
         int last_id = (int)sqlite3_last_insert_rowid(db);
         sqlite3_close(db);
 
+        // Explicitly create response to redirect
         crow::response res;
-        // Redirect to ID without trailing slash
-        res.redirect("/hallticket/" + std::to_string(last_id));
+        res.code = 302;
+        res.set_header("Location", "/hallticket/" + std::to_string(last_id));
         return res;
     });
 
-    // 3. Hall Ticket Page (GET)
+    // 3. Hall Ticket Page (Explicitly allow both trailing and non-trailing slash)
     CROW_ROUTE(app, "/hallticket/<int>").methods(crow::HTTPMethod::Get)
     ([](int id){
         sqlite3* db;
@@ -82,5 +83,7 @@ int main() {
 
     char* port_env = getenv("PORT");
     uint16_t port = static_cast<uint16_t>(port_env ? std::stoi(port_env) : 18080);
+    
+    // Allow Render to serve the app correctly
     app.port(port).bindaddr("0.0.0.0").multithreaded().run();
 }
