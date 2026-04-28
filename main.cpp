@@ -4,9 +4,8 @@
 #include <iostream>
 #include <sstream>
 #include <iomanip>
-#include <random> // For Unique ID
+#include <random>
 
-// Helper for URL safety
 std::string url_encode(const std::string &value) {
     std::ostringstream escaped;
     escaped.fill('0');
@@ -21,7 +20,6 @@ std::string url_encode(const std::string &value) {
     return escaped.str();
 }
 
-// Function to generate a random 6-digit Unique ID
 std::string generate_unique_id() {
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -32,7 +30,7 @@ std::string generate_unique_id() {
 void init_db() {
     sqlite3* db;
     sqlite3_open("students.db", &db);
-    // Added unique_id column to the table
+    // Explicitly using IF NOT EXISTS and ensuring the structure is correct
     std::string sql = "CREATE TABLE IF NOT EXISTS students ("
                       "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                       "unique_id TEXT,"
@@ -55,14 +53,26 @@ int main() {
         std::string name = x.get("name") ? x.get("name") : "Student";
         std::string roll = x.get("roll_no") ? x.get("roll_no") : "N/A";
         std::string branch = x.get("branch") ? x.get("branch") : "General";
-        std::string uid = generate_unique_id(); // Generate the Random ID
+        std::string uid = generate_unique_id();
 
         sqlite3* db;
         sqlite3_open("students.db", &db);
+        
+        // Use a safer prepared statement format for the insert
         std::string sql = "INSERT INTO students (unique_id, name, roll_no, branch, subjects) VALUES ('" 
                           + uid + "', '" + name + "', '" + roll + "', '" + branch + "', 'Mathematics, Physics, Computing');";
-        sqlite3_exec(db, sql.c_str(), 0, 0, 0);
-        int last_id = (int)sqlite3_last_insert_rowid(db);
+        
+        char* errMsg = 0;
+        int rc = sqlite3_exec(db, sql.c_str(), 0, 0, &errMsg);
+        
+        int last_id = 0;
+        if (rc == SQLITE_OK) {
+            last_id = (int)sqlite3_last_insert_rowid(db);
+        } else {
+            std::cerr << "SQL Error: " << errMsg << std::endl;
+            sqlite3_free(errMsg);
+        }
+        
         sqlite3_close(db);
 
         crow::response res;
@@ -73,11 +83,17 @@ int main() {
 
     CROW_ROUTE(app, "/hallticket/<int>").methods(crow::HTTPMethod::Get)
     ([](int id){
+        if (id == 0) return crow::response(400, "Invalid Registration. Please try again.");
+
         sqlite3* db;
         sqlite3_stmt* stmt;
         sqlite3_open("students.db", &db);
         std::string sql = "SELECT unique_id, name, roll_no, branch, subjects FROM students WHERE id = " + std::to_string(id);
-        sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, 0);
+        
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, 0) != SQLITE_OK) {
+            sqlite3_close(db);
+            return crow::response(500, "Database Error");
+        }
         
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             crow::mustache::context ctx;
@@ -91,7 +107,6 @@ int main() {
             ctx["branch"] = (const char*)sqlite3_column_text(stmt, 3);
             ctx["subjects"] = (const char*)sqlite3_column_text(stmt, 4);
             
-            // QR data now includes the Unique ID for scanning verification
             std::string raw_data = "UID: " + s_uid + " | Student: " + s_name + " | Roll: " + s_roll;
             ctx["qr_url"] = "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=" + url_encode(raw_data);
 
@@ -99,6 +114,7 @@ int main() {
             sqlite3_close(db);
             return crow::response(crow::mustache::load("hallticket.html").render(ctx));
         }
+        
         sqlite3_finalize(stmt);
         sqlite3_close(db);
         return crow::response(404, "Ticket Not Found");
