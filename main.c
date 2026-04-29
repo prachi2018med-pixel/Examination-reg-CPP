@@ -45,7 +45,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
         
         // ROUTE: Register (POST)
         else if (mg_match(hm->uri, mg_str("/register"), NULL)) {
-            char name[100] = {0}, roll[100] = {0}, branch[100] = {0};
+            char name[100] = "Student", roll[100] = "000", branch[100] = "General";
             
             mg_http_get_var(&hm->body, "name", name, sizeof(name));
             mg_http_get_var(&hm->body, "roll_no", roll, sizeof(roll));
@@ -55,16 +55,19 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
             int uid = 100000 + (rand() % 900000);
 
             sqlite3 *db;
-            sqlite3_open("students.db", &db);
-            char query[512];
-            snprintf(query, sizeof(query), "INSERT INTO students (unique_id, name, roll, branch) VALUES ('%d', '%s', '%s', '%s');", 
-                    uid, name, roll, branch);
-            sqlite3_exec(db, query, NULL, NULL, NULL);
-            int last_id = (int)sqlite3_last_insert_rowid(db);
-            sqlite3_close(db);
+            if (sqlite3_open("students.db", &db) == SQLITE_OK) {
+                char query[512];
+                snprintf(query, sizeof(query), "INSERT INTO students (unique_id, name, roll, branch) VALUES ('%d', '%s', '%s', '%s');", 
+                        uid, name, roll, branch);
+                sqlite3_exec(db, query, NULL, NULL, NULL);
+                int last_id = (int)sqlite3_last_insert_rowid(db);
+                sqlite3_close(db);
 
-            // Fix for hanging: 303 Redirect with explicit headers
-            mg_http_reply(c, 303, "Location: /hallticket?id=%d\r\nContent-Length: 0\r\n\r\n", last_id);
+                // Use a standard 302 redirect for Render's environment
+                mg_http_reply(c, 302, "Location: /hallticket?id=%d\r\nContent-Length: 0\r\n\r\n", last_id);
+            } else {
+                mg_http_reply(c, 500, "", "DB Error");
+            }
         }
         
         // ROUTE: Hall Ticket
@@ -85,7 +88,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 const char *branch = (const char*)sqlite3_column_text(res, 3);
 
                 char raw_qr[256], encoded_qr[512];
-                snprintf(raw_qr, sizeof(raw_qr), "UID:%s|Student:%s|Roll:%s", uid, name, roll);
+                snprintf(raw_qr, sizeof(raw_qr), "UID:%s|Name:%s|Roll:%s", uid, name, roll);
                 url_encode(raw_qr, encoded_qr);
 
                 mg_http_reply(c, 200, "Content-Type: text/html\r\n", 
@@ -97,22 +100,16 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                     "h2{text-align:center; color:#1a2a6c; border-bottom:2px solid #1a2a6c; padding-bottom:10px;}"
                     ".qr{position:absolute; top:90px; right:40px; text-align:center;}"
                     "button{padding:12px 24px; background:#1a2a6c; color:#fff; border:none; border-radius:5px; cursor:pointer; margin-bottom:20px; font-weight:bold;}"
-                    "p{font-size:18px; margin:12px 0;}"
                     "</style></head><body>"
                     "<button onclick='dl()'>Download Hall Ticket (PDF)</button>"
                     "<div id='t' class='ticket'><h2>EXAM HALL TICKET</h2>"
-                    "<p><b>Candidate ID:</b> %s</p>"
-                    "<p><b>Student Name:</b> %s</p>"
-                    "<p><b>Roll Number:</b> %s</p>"
-                    "<p><b>Branch:</b> %s</p>"
-                    "<p><b>Subjects:</b> Core Engineering Subjects</p>"
-                    "<div class='qr'><img src='https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=%s' width='140'><br><small>VERIFY QR</small></div>"
-                    "<hr><p style='font-size:12px; text-align:center;'>Computer Generated Document - Verify via QR Code.</p>"
+                    "<p><b>Candidate ID:</b> %s</p><p><b>Name:</b> %s</p><p><b>Roll:</b> %s</p><p><b>Branch:</b> %s</p>"
+                    "<div class='qr'><img src='https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=%s' width='140'><br><small>VERIFY</small></div>"
                     "</div>"
-                    "<script>function dl(){const e=document.getElementById('t'); html2pdf().set({margin:10, filename:'HallTicket_%s.pdf', html2canvas:{useCORS:true, scale:2}}).from(e).save();}</script>"
-                    "</body></html>", uid, name, roll, branch, encoded_qr, uid);
+                    "<script>function dl(){const e=document.getElementById('t'); html2pdf().set({margin:10, filename:'Ticket.pdf', html2canvas:{useCORS:true, scale:2}}).from(e).save();}</script>"
+                    "</body></html>", uid, name, roll, branch, encoded_qr);
             } else {
-                mg_http_reply(c, 404, "", "Student Record Not Found");
+                mg_http_reply(c, 404, "", "Record Not Found");
             }
             sqlite3_finalize(res);
             sqlite3_close(db);
@@ -120,7 +117,6 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
     }
 }
 
-// 4. Main Function
 int main() {
     init_db();
     struct mg_mgr mgr;
@@ -131,7 +127,7 @@ int main() {
     char url[64];
     snprintf(url, sizeof(url), "http://0.0.0.0:%s", port);
 
-    printf("Starting C Server on %s\n", url);
+    printf("Server started on %s\n", url);
     mg_http_listen(&mgr, url, fn, NULL);
     for (;;) mg_mgr_poll(&mgr, 1000);
     
